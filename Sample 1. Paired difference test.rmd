@@ -1,0 +1,144 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc. 
+---------------------------------------------------------------------
+Program Name    : Sample 1. Paired difference test
+Author          : Lucy Williams
+Date            : February 2022
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform paired difference test analysis
+---------------------------------------------------------------------
+
+*Summary*
+First, the assumptions of the possible paired difference tests were evaluated. For our dataset, the paired Wilcoxon rank sum test was most appropriate, so we then used this to test the significance of the difference between the MCS/PCS scores at each follow up visit with the scores at treatment initiation. We also estimated the differences between the median scores at each follow up and evaluated whether the paired Wilcoxon rank sum test's missing completely at random (MCAR) assumption was reasonable.
+
+Variables: 
+- INSTANCENAME = visit window (month 0, 3, 6, 12, 18 or 24)
+- Participant = unique ID number for each participant
+- mcs = Mental component score
+- pcs = Physical component score
+- Month0M/Month0P = MCS/PCS score at 0 months post treatment initiation
+- variableX = covariate such as age, HIV viral load or sex
+
+#1) Setup 
+
+- Install and load required packages.
+- Load data in wide format
+
+```{r Packages}
+library(naniar)
+```
+
+
+#2) Explore the normality of the distributions
+
+First we explore the distribution of the outcomes to decide which test is most appropriate for our data. We have continuous outcomes, so decide between the paired t test and the PWRS test. As we find that the t test normality assumption cannot be met, we use the PWRS test.
+
+```{r MCS Histograms}
+hist(data_wide$Month0M) #Histogram of MCS values at treatment initiation (month 0)
+hist(data_wide$Month3M)
+hist(data_wide$Month6M)
+hist(data_wide$Month12M)
+hist(data_wide$Month18M)
+hist(data_wide$Month24M)
+#in TAFNES data, all negatively skewed (Supplementary figure 6)
+```
+
+```{r PCS Histograms}
+hist(data_wide$Month0P) #Histogram of PCS values at treatment initiation (month 0)
+hist(data_wide$Month3P)
+hist(data_wide$Month6P)
+hist(data_wide$Month12P)
+hist(data_wide$Month18P)
+hist(data_wide$Month24P)
+#in TAFNES data, all negatively skewed (Supplementary figure 7)
+```
+
+To formally test the normality of the distributions, perform Shapiro-Wilks tests. The test rejects the hypothesis of normality when the p-value is less than or equal to 0.05
+
+```{r MCS Shapiro tests}
+shapiro.test(data_wide$Month0M)
+shapiro.test(data_wide$Month3M)
+shapiro.test(data_wide$Month6M)
+shapiro.test(data_wide$Month12M)
+shapiro.test(data_wide$Month18M)
+shapiro.test(data_wide$Month24M)
+#applied to TAFNES data, all p<0.0001
+```
+
+```{r PCS Shapiro tests}
+shapiro.test(data_wide$Month0P)
+shapiro.test(data_wide$Month3P)
+shapiro.test(data_wide$Month6P)
+shapiro.test(data_wide$Month12P)
+shapiro.test(data_wide$Month18P)
+shapiro.test(data_wide$Month24P)
+#applied to TAFNES data, all p<0.0001
+```
+
+#3) Paired WR Sum (PWRS) tests - p values
+The PWRS test calculates the significance of the difference in the outcome for cases that had an observation at both visit windows. Here we calculate the 2-sided p value for the differences between baseline and each follow-up period. We adjust for multiple testing using the Benjamini Hochberg correction.
+
+```{r MCS PWRS}
+p <- c(wilcox.test(data_wide$Month3M, data_wide$Month0M, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month6M, data_wide$Month0M, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month12M, data_wide$Month0M, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month18M, data_wide$Month0M, paired=TRUE)$p.value, 
+       wilcox.test(data_wide$Month24M, data_wide$Month0M, paired=TRUE)$p.value)
+p.adjust(p, method = "BH", n = length(p))
+#applied to TAFNES data, all significant <0.05
+```
+
+```{r PCS PWRS}
+p <- c(wilcox.test(data_wide$Month3P, data_wide$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month6P, data_wide$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month12P, data_wide$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide$Month18P, data_wide$Month0P, paired=TRUE)$p.value, 
+       wilcox.test(data_wide$Month24P, data_wide$Month0P, paired=TRUE)$p.value)
+p.adjust(p, method = "BH", n = length(p))
+#applied to TAFNES data, all significant <0.05 (but less than MCS)
+```
+
+#4) Calculating the differences between the medians
+
+```{r MCS median difference}
+#M3-M0
+median(data_wide$Month3M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month3M))]) - median(data_wide$Month0M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month3M))])
+#M6-M0
+median(data_wide$Month6M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month6M))]) - median(data_wide$Month0M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month6M))])
+#M12-M0
+median(data_wide$Month12M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month12M))]) - median(data_wide$Month0M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month12M))])
+#M18-M0
+median(data_wide$Month18M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month18M))]) - median(data_wide$Month0M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month18M))])
+#M24-M0
+median(data_wide$Month24M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month24M))]) - median(data_wide$Month0M[which(!is.na(data_wide$Month0M)&!is.na(data_wide$Month24M))])
+```
+
+```{r PCS median difference}
+#M3-M0
+median(data_wide$Month3P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month3P))]) - median(data_wide$Month0P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month3P))])
+#M6-M0
+median(data_wide$Month6P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month6P))]) - median(data_wide$Month0P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month6P))])
+#M12-M0
+median(data_wide$Month12P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month12P))]) - median(data_wide$Month0P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month12P))])
+#M18-M0
+median(data_wide$Month18P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month18P))]) - median(data_wide$Month0P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month18P))])
+#M24-M0
+median(data_wide$Month24P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month24P))]) - median(data_wide$Month0P[which(!is.na(data_wide$Month0P)&!is.na(data_wide$Month24P))])
+```
+
+#5) Testing the validity of the MCAR assumption - Little's MCAR test
+
+For the R function, mcar_test, character variables variables must be converted to factors.
+
+```{r mcar_test}
+str(data_wide[1,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M", "variable1", "variable2", "variable3", "variable4", "variable5")]) 
+data_wide$variable1 <- as.factor(data_wide$variable1)
+data_wide$variable2 <- as.factor(data_wide$variable2)
+data_wide$variable3 <- as.factor(data_wide$variable3)
+data_wide$variable4 <- as.factor(data_wide$variable4)
+data_wide$variable5 <- as.factor(data_wide$variable5)
+littletest <- mcar_test(data_wide[,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M","Month0P", "Month3P","Month6P","Month12P","Month18P","Month24P", "variable1", "variable2", "variable3", "variable4", "variable5")])
+print(littletest$p.value,digits=6)
+#applied to TAFNES data, p = 0.0001 -> MCAR is an invalid assumption
+```
+

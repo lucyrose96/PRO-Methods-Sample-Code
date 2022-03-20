@@ -1,0 +1,182 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc.
+---------------------------------------------------------------------
+Program Name    : Sample 3. Linear mixed model (categorical)
+Author          : Lucy Williams
+Date            : February 2022
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform linear mixed model analysis with time treated as a categorical variable
+---------------------------------------------------------------------
+
+*Summary*
+
+We use the lme function from the "nlme" R package to run linear mixed models (LMMs) for the change in MCS and PCS over time. First we select the type of random effect, then we perform backwards selection of covariates and finally we check the model assumptions. For the TAFNES data, the LMM normality assumption could not be met, so we transformed our outcome variables then repeated the model development steps, to generate our final models.
+
+Variables: 
+- INSTANCENAME = visit window (month 0, 3, 6, 12, 18 or 24)
+- Participant = unique ID number for each participant
+- mcs = Mental component score
+- pcs = Physical component score
+- variableX = covariate such as age, HIV viral load or sex
+
+#1) Setup
+
+- Install and load required packages.
+- Load data in long format.
+- Ensure categorical predictor variables are converted to factor variables.
+
+```{r Packages}
+library(ggplot2)
+library(lme4)
+library(nlme)
+library(knitr)
+```
+
+#2) Select the type of random effect
+
+Random effects can be fitted to give each individual their own starting value (random effect on the intercept), the change over another variable (random effect on the slope), or both. Here we explored the feasibility of fitting an LMM with a random effect on i) intercept, ii) slope over time, iii) intercept and slope over time. Only the former did not lead to overparameterisation, so we used this in the subsequent models. However, random effect selection could have instead been based on model fit, e.g. AIC.
+
+It is best to compare models that differ by their random effects with the restricted maximum likelihood (REML), so here we specify method = "REML". When comparing fixed effects, and if not interested in variance estimates, maximum likelihood (ML) should be used.
+
+```{r Intercept}
+#MCS
+RandomInterceptM = lme(mcs~ INSTANCENAME, random = ~1|participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomInterceptM)
+#PCS
+RandomInterceptP = lme(pcs~ INSTANCENAME, random = ~1|participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomInterceptP)
+```
+
+```{r Slope}
+#MCS
+RandomSlopeM = lme(mcs~ INSTANCENAME, random = ~ -1 + INSTANCENAME | participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomSlopeM)
+#PCS
+RandomSlopeP = lme(pcs~ INSTANCENAME, random = ~ -1 + INSTANCENAME | participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomSlopeP)
+```
+
+```{r Intercept and slope}
+#MCS
+RandomSlopeInterceptM = lme(mcs~ INSTANCENAME, random=~1+INSTANCENAME|participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomSlopeInterceptM)
+#PCS
+RandomSlopeInterceptP = lme(pcs~ INSTANCENAME, random=~1+INSTANCENAME|participant, data=data_long, na.action = na.omit, method = "REML")
+summary(RandomSlopeInterceptP)
+```
+
+#3) Covariate selection
+
+We used backwards selection to select the final covariates in the model. Starting with a full model with all hypothesised predictor variables and their interactions with time, we iteratively removed the predictor with the highest P-value until all predictors had a P-value less than or equal to 0.05. As backwards selection can lead to problems with multiple testing, inclusion of covariates in the final models from backwards selection were validated by testing their inclusion with the AIC, and including only those that improved the model fit. 
+
+```{r Covariate selection LMM MCS Categorical}
+#Starting with the full model
+model <- lme(mcs~  INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#variable 5:INSTANCENAME interaction has highest p value, remove
+
+model <- lme(mcs~  INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#variable 4:INSTANCENAME interaction has highest p value, remove
+
+model <- lme(mcs~  INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable5, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#variable 5 has highest p value, remove
+
+model <- lme(mcs~  INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#all estimates p<0.05
+AIC(model)
+
+#Check variable's for which the interaction with time was are only significant for 1 visit window, using AIC (lower = better fit).
+model <- lme(mcs~  INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(model)#removing variable1:INSTANCENAME increases AIC, keep
+```
+
+```{r Covariate selection LMM PCS Categorical}
+model <- lme(pcs~  INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME+ variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#variable 1:INSTANCENAME interaction has highest p value, remove
+
+model <- lme(pcs~  INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME+ variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#variable 2:INSTANCENAME interaction has highest p value, remove
+
+model <- lme(pcs~  INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(model)#all estimates p<0.05
+```
+
+#4) Run selected models
+
+```{r selected MCS model}
+#Final model from backwards selection
+modelM <- lme(mcs~  INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+#Then we fit the same model, but fit with the lmer function - as some of the model check functions don't work with lme. (We use lme because it calculates p values)
+modelM_lmer <- lmer(mcs~ INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + (1 | participant), data=data_long, REML = FALSE, na.action = na.omit)
+```
+
+```{r selected PCS model}
+#Final model from backwards selection
+modelP <- lme(pcs~  INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+modelP_lmer <- lmer(pcs~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME + (1 | participant), data=data_long, REML = FALSE, na.action = na.omit)
+```
+
+#5) Model checks
+
+The LMM assumes:
+
+- The explanatory variables are related linearly to the response. 
+- The errors have constant variance. 
+- The errors are independent. 
+- The errors are Normally distributed.
+
+```{r MCS model checks}
+#1) Residuals vs observed
+plot(resid(modelM),na.omit(data_long)$mcs)
+#2) Residuals vs fitted values
+plot(modelM)
+#3) QQ plot - normality of residuals
+#(this function doesn't work on lme models, but does with lmer)
+qqmath(modelM_lmer, main = "MCS")
+#4) Normality of random effects
+r_int<- ranef(modelM_lmer)$participant$'(Intercept)'
+qqnorm(r_int)
+qqline(r_int)
+shapiro.test(r_int)
+#For the TAFNES data, the normality assumption is broken when the outcome is not transformed
+```
+
+```{r PCS model checks}
+#1) Residuals vs observed
+plot(resid(modelP),na.omit(data_long)$pcs)
+#2) Residuals vs fitted values
+plot(modelP)
+#3) QQ plot - normality of residuals
+#(this function doesn't work on lme models, but does with lmer)
+qqmath(modelP_lmer, main = "PCS")
+#4) Normality of random effects
+r_int<- ranef(modelP_lmer)$participant$'(Intercept)'
+qqnorm(r_int)
+qqline(r_int)
+shapiro.test(r_int)
+#For the TAFNES data, the normality assumption is broken when the outcome is not transformed
+```
+
+
+#6) Correct issues with model assumptions and run final models
+
+If any of the model assumptions are broken, these will have to be corrected to avoid biased estimates. For the TAFNES data, the normality assumption was broken for both MCS and PCS. We created a new variable for each outcome, MCS transformed (MCSt) and PCS transformed (PCSt):
+
+```{r mcst and pcst}
+data_long$mcst <- -log(100-data_long$mcs)
+data_long$pcst <- -log(100-data_long$pcs)
+```
+
+We then re-ran sections 3, 4 and 5 again with the new transformed variables,to give our final models.
+
+```{r Final MCSt}
+#Final model from backwards selection
+modelM <- lme(mcst~  INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelM)
+```
+
+```{r Final PCSt}
+#Final model from backwards selection
+modelP <- lme(pcst~  INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , ~1  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelP)
+```
+

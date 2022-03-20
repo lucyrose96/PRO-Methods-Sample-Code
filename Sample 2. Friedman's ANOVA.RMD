@@ -1,0 +1,207 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc.
+---------------------------------------------------------------------
+Program Name    : Sample 2. Friedman's ANOVA
+Author          : Lucy Williams
+Date            : February 2022
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform Friedman's ANOVA analysis
+---------------------------------------------------------------------
+
+*Summary*
+First, the normality of the distributions of the outcomes over time were evaluated to decide whether to use the parametric repeated-measures ANOVA or the non-parametric alternative, the Friedman's ANOVA. For the TAFNES dataset, the Friedman's ANOVA was most appropriate, so we then used this to test if the MCS and PCS scores significantly differed over follow up. We then applied post-hoc paired Wilcoxon rank sum tests to identify which follow up periods had significantly different MCS and PCS scores. Finally, we evaluated whether the paired Wilcoxon rank sum test's missing completely at random (MCAR) assumption was reasonable.
+
+#1) Setup
+
+- Install and load required packages.
+- Load data in long format and balanced data in long format and wide format
+
+```{r Packages and functions}
+'%!in%' <- function(x,y)!('%in%'(x,y))
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(naniar)
+```
+
+#2) Explore the normality of the distributions
+
+First we explore the distribution of the outcomes to decide which ANOVA is most appropriate for our data. As we find that the repeated-measures ANOVA normality assumption cannot be met, we use the non-parametric Friedman's ANOVA.
+
+```{r MCS Histograms}
+hist(data_wide$Month0M) #Histogram of MCS values at treatment initiation (month 0)
+hist(data_wide$Month3M)
+hist(data_wide$Month6M)
+hist(data_wide$Month12M)
+hist(data_wide$Month18M)
+hist(data_wide$Month24M)
+#in TAFNES data, all negatively skewed (Supplementary figure 6)
+```
+
+```{r PCS Histograms}
+hist(data_wide$Month0P) #Histogram of PCS values at treatment initiation (month 0)
+hist(data_wide$Month3P)
+hist(data_wide$Month6P)
+hist(data_wide$Month12P)
+hist(data_wide$Month18P)
+hist(data_wide$Month24P)
+#in TAFNES data, all negatively skewed (Supplementary figure 7)
+```
+
+To formally test the normality of the distributions, perform Shapiro-Wilks tests. The test rejects the hypothesis of normality when the p-value is less than or equal to 0.05
+
+```{r MCS Shapiro tests}
+shapiro.test(data_wide$Month0M)
+shapiro.test(data_wide$Month3M)
+shapiro.test(data_wide$Month6M)
+shapiro.test(data_wide$Month12M)
+shapiro.test(data_wide$Month18M)
+shapiro.test(data_wide$Month24M)
+#applied to TAFNES data, all p<0.0001
+```
+
+```{r PCS Shapiro tests}
+shapiro.test(data_wide$Month0P)
+shapiro.test(data_wide$Month3P)
+shapiro.test(data_wide$Month6P)
+shapiro.test(data_wide$Month12P)
+shapiro.test(data_wide$Month18P)
+shapiro.test(data_wide$Month24P)
+#applied to TAFNES data, all p<0.0001
+```
+
+#3) Running the friedman's tests
+
+```{r Friedman's tests}
+#MCS
+friedman.test(mcs ~ INSTANCENAME | participant,
+              data = data_long_balanced)#TAFNES data: significant p-value
+#PCS
+friedman.test(pcs ~ INSTANCENAME | participant,
+              data = data_long_balanced)#TAFNES data: insignificant p-value
+```
+
+#4) Post-hoc tests for MCS
+Post-hoc tests are used to identify the combinations of visit windows that are significantly different. For the TAFNES data, because only the MCS outcome returned a significant result in the Friedman's ANOVA, post-hoc tests are only required for this.
+
+```{r MCS month 0 comparison}
+p <- c(wilcox.test(data_wide_balanced$Month3M, data_wide_balanced$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month6M, data_wide_balanced$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month12M, data_wide_balanced$Month0P, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month18M, data_wide_balanced$Month0P, paired=TRUE)$p.value, 
+       wilcox.test(data_wide_balanced$Month24M, data_wide_balanced$Month0P, paired=TRUE)$p.value)
+p.adjust(p, method = "BH", n = length(p))
+
+median(data_wide_balanced$Month3M)-median(data_wide_balanced$Month0P)
+median(data_wide_balanced$Month6M)-median(data_wide_balanced$Month0P)
+```
+
+```{r MCS month 3 comparison}
+p1 <- c(wilcox.test(data_wide_balanced$Month6M, data_wide_balanced$Month3M, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month12M, data_wide_balanced$Month3M, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month18M, data_wide_balanced$Month3M, paired=TRUE)$p.value, 
+       wilcox.test(data_wide_balanced$Month24M, data_wide_balanced$Month3M, paired=TRUE)$p.value)
+p.adjust(p1, method = "BH", n = length(p1))
+```
+
+```{r MCS month 6 comparison}
+p1 <- c(wilcox.test(data_wide_balanced$Month12M, data_wide_balanced$Month6M, paired=TRUE)$p.value,
+       wilcox.test(data_wide_balanced$Month18M, data_wide_balanced$Month6M, paired=TRUE)$p.value, 
+       wilcox.test(data_wide_balanced$Month24M, data_wide_balanced$Month6M, paired=TRUE)$p.value)
+p.adjust(p1, method = "BH", n = length(p1))
+```
+
+```{r MCS month 12 comparison}
+p1 <- c(wilcox.test(data_wide_balanced$Month18M, data_wide_balanced$Month12M, paired=TRUE)$p.value, 
+       wilcox.test(data_wide_balanced$Month24M, data_wide_balanced$Month12M, paired=TRUE)$p.value)
+p.adjust(p1, method = "BH", n = length(p1))
+median(data_wide_balanced$Month12M)-median(data_wide_balanced$Month18M)
+```
+
+```{r MCS month 18 comparison}
+p1 <- c(wilcox.test(data_wide_balanced$Month24M, data_wide_balanced$Month18M, paired=TRUE)$p.value)
+p.adjust(p1, method = "BH", n = length(p1))
+median(data_wide_balanced$Month24M)-median(data_wide_balanced$Month18M)
+```
+
+In the TAFNES data, significant differences were identified between M0-M3, M0-M6, M12-M18, M18-M24.
+
+#5) Testing the validity of the MCAR assumption - Little's MCAR test
+
+For the R function, mcar_test, character variables variables must be converted to factors.
+
+```{r mcar_test}
+str(data_wide[1,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M", "variable1", "variable2", "variable3", "variable4", "variable5")]) 
+data_wide$variable1 <- as.factor(data_wide$variable1)
+data_wide$variable2 <- as.factor(data_wide$variable2)
+data_wide$variable3 <- as.factor(data_wide$variable3)
+data_wide$variable4 <- as.factor(data_wide$variable4)
+data_wide$variable5 <- as.factor(data_wide$variable5)
+littletest <- mcar_test(data_wide[,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M","Month0P", "Month3P","Month6P","Month12P","Month18P","Month24P", "variable1", "variable2", "variable3", "variable4", "variable5")])
+print(littletest$p.value,digits=6)
+#applied to TAFNES data, p = 0.0001 -> MCAR is an invalid assumption
+```
+
+#6) Visualising the differences between the balanced and unbalanced populations
+
+To visualise how the MCS and PCS trends differ between the balanced and unbalanced populations, plot the scores over time separately for each population.
+
+```{r Data for plot}
+#Create a dataset for the plot, with the balanced and unbalanced population medians and IQRs
+data_long$balanced <- rep(NA, nrow(data_long))
+data_long$balanced[which(data_long$usubjid %in% data_long_balanced$usubjid)] <- "Balanced"
+data_long$balanced[which(data_long$usubjid %!in% data_long_balanced$usubjid)] <- "Unbalanced"
+data_long$balanced <- as.factor(data_long$balanced)
+ggdata <- data_long %>%
+  group_by(INSTANCENAME, balanced)%>%
+  summarise(medianbalMCS = median(mcs, na.rm = T),
+            medianbalPCS = median(pcs, na.rm = T),
+            Q1_pcs = quantile(pcs, 1/4, na.rm = T),
+            Q3_pcs = quantile(pcs, 3/4, na.rm = T),
+            Q1_mcs = quantile(mcs, 1/4, na.rm = T),
+            Q3_mcs = quantile(mcs, 3/4, na.rm = T)
+            )
+#create a replica numeric visit window variable, so that the plot will show the visit windows with the right spacing between them
+ggdata$INSTANCENAME2 <- ggdata$INSTANCENAME
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "Before Study Treatment Initiation")] <- 0
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "3 Month Follow Up")] <- 3
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "6 Month Follow Up")] <- 6
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "12 Month Follow Up")] <- 12
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "18 Month Follow Up")] <- 18
+ggdata$INSTANCENAME2[which(ggdata$INSTANCENAME2 == "24 Month Follow Up")] <- 24
+ggdata$INSTANCENAME2 <- as.integer(ggdata$INSTANCENAME2)
+
+```
+
+```{r MCS plot}
+anovaggplotM <- ggplot(ggdata, aes(x = INSTANCENAME2, group = balanced))+
+  geom_line(aes(y = medianbalMCS))+ 
+    geom_point(aes(y = medianbalMCS), shape = 4, size = 3)+ 
+    theme_classic2()+
+ scale_x_continuous(breaks=c(0,3,6,12,18,24))+
+ coord_cartesian(ylim = c(30, 60))+  
+  labs(x = "Visit Window", y = "Median MCS", title = "MCS")+
+  theme(legend.title = element_blank(), legend.key.size = unit(1.5, "cm"), legend.position = c(0.9,0.2))+
+  geom_errorbar(aes(ymin= Q1_mcs, ymax=Q3_mcs), width=.5, data = ggdata, alpha = 0.5, colour = "grey19")+
+  geom_errorbar(aes(ymin= Q1_mcs, ymax=Q3_mcs), width=.5, data = ggdata, alpha = 0.5, colour = "grey19")+
+  facet_wrap(~balanced)+ 
+  theme(plot.title = element_text(hjust = 0.5)) 
+anovaggplotM
+```
+
+```{r PCS plot}
+anovaggplotP <- ggplot(ggdata, aes(x = INSTANCENAME2, group = balanced))+
+  geom_line(aes(y = medianbalPCS))+
+    geom_point(aes(y = medianbalPCS), shape = 4, size = 3)+
+    theme_classic2()+
+ scale_x_continuous(breaks=c(0,3,6,12,18,24))+
+ coord_cartesian(ylim = c(30, 60))+
+  labs(x = "Visit Window", y = "Median PCS", title = "PCS")+
+  theme(legend.title = element_blank(), legend.key.size = unit(1.5, "cm"), legend.position = c(0.9,0.2))+
+  geom_errorbar(aes(ymin= Q1_pcs, ymax=Q3_pcs), width=.5, data = ggdata, alpha = 0.5, colour = "grey19")+
+  geom_errorbar(aes(ymin= Q1_pcs, ymax=Q3_pcs), width=.5, data = ggdata, alpha = 0.5, colour = "grey19")+
+  facet_wrap(~balanced)+
+  theme(plot.title = element_text(hjust = 0.5))
+anovaggplotP
+```
+

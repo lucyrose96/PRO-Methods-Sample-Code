@@ -1,0 +1,514 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc.
+---------------------------------------------------------------------
+Program Name    : Sample 6. Weighted generalised estimating equation (continuous)
+Author          : Lucy Williams
+Date            : February 2022
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform weighted generalised estimating equation analysis with time treated as a continuous variable
+---------------------------------------------------------------------
+
+*Summary*
+
+We use the geeglm function from the "geepack" R package to run generalised estimating equations (GEE) for the change in MCS and PCS over time. First we check which missing data assumption is most appropriate for the data. Normal GEEs assume that missing data is missing completely at random (MCAR), while weighted GEEs can handle data that is MCAR or missing at random (MAR). As we find that MCAR should not be assumed for our data, we use a weighted GEE.
+
+We produce inverse probability weights for each MCS and PCS observation using logistic regression models for each follow up interval, and use these weights in the subsequent wGEE models (please see "Sample 5. Weighted generalised estimating equation (categorical)" code for guidance on weight generation). We estimate the best functional forms for three non-linear functions for the continuous time variable: a) polynomial transformation, b) fractional polynomial transformation, c) piecewise linear splines. We then use these non-linear functions in our models when selecting the most appropriate working correlation matrix, then select covariates by backwards selection.
+
+Variables: 
+- INSTANCENAME = visit window (month 0, 3, 6, 12, 18 or 24)
+- Participant = unique ID number for each participant
+- mcs = Mental component score
+- pcs = Physical component score
+- variableX = covariate such as age, HIV viral load or sex
+- Month0M/Month0P = MCS/PCS score at 0 months post treatment initiation
+
+#1) Setup 
+
+- Install and load required packages.
+- Load data in long and wide format.
+- Ensure categorical predictor variables are converted to factor variables.
+
+```{r Install Packages}
+library(geepack)
+library(knitr)
+library(mfp)
+library(lspline)
+library(MuMIn)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(naniar)
+```
+
+#2) Test the validity of the MCAR assumption - Little's MCAR test
+
+For the R function, mcar_test, character variables variables must be converted to factors.
+
+```{r mcar_test}
+str(data_wide[1,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M", "variable1", "variable2", "variable3", "variable4", "variable5")]) 
+data_wide$variable1 <- as.factor(data_wide$variable1)
+data_wide$variable2 <- as.factor(data_wide$variable2)
+data_wide$variable3 <- as.factor(data_wide$variable3)
+data_wide$variable4 <- as.factor(data_wide$variable4)
+data_wide$variable5 <- as.factor(data_wide$variable5)
+littletest <- mcar_test(data_wide[,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M","Month0P", "Month3P","Month6P","Month12P","Month18P","Month24P", "variable1", "variable2", "variable3", "variable4", "variable5")])
+print(littletest$p.value,digits=6)
+#applied to TAFNES data, p = 0.0001 -> MCAR is an invalid assumption
+```
+
+If MCAR is not a valid assumption, a weighted GEE must be used, in which each observation is inversely weighted by the probability that it was observed. We demonstrate our approach for weight generation in step 3. If MCAR is valid, a non-weighted GEE can be used (skip to step 4).
+
+#3) Inverse probability weighting
+
+If MCAR is not a valid assumption, the inverse probability weights should next be generated. Please see Sample 5. Weighted generalised estimating equation (categorical), part 3 for guidance. 
+
+#4) Non-linear function selection
+
+We approximated the best functional forms for the non-linear functions using available R functions. As they run with models that are not mixed models and without covariates, we validated the best functional forms later in our final models.
+
+##a) Polynomial
+
+The sjp.poly function from the "sjPlot" package can be used to select the most appropriate degree for the data. It runs a separate regression model for each degree and visualises it with a ggplot. The line that is closest to the grey loess smoother curve gives the best fit. The p-values in the printed results tell you whether the additional complexity significantly improves the fit of the model. 
+
+https://www.rdocumentation.org/packages/sjPlot/versions/2.8.4/topics/sjp.poly
+
+```{r sjp.poly}
+#MCS
+sjp.poly(data_long$mcs, data_long$timemonth, 1:4, show.scatter = F, show.loess = TRUE, show.p = T)
+#-> for the TAFNES data, the best fit is the third degree polynomial, because it gives a significantly better fit than the second degree, but the fourth degree does not significantly improve the fit.
+#PCS
+sjp.poly(data_long$pcs, data_long$timemonth, 1:4, show.scatter = F, show.loess = TRUE, show.p = T)
+#-> for the TAFNES data, the best fit is the third degree polynomial, because it gives a significantly better fit than the second degree, but the fourth degree does not significantly improve the fit.
+```
+
+Comparing the model fit (QIC) of different polynomial functions. We select the working correlation matrix in the next step, so preliminarily chose the unstructured matrix to choose the non-linear functions.
+
+```{r MCS likelihood ratio test}
+poly1 <- geeglm(mcs ~ poly(timemonth, 1, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly2 <- geeglm(mcs ~ poly(timemonth, 2, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly3 <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly4 <- geeglm(mcs ~ poly(timemonth, 4, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(poly1)
+QIC(poly2)
+QIC(poly3)
+QIC(poly4)
+#For the TAFNES data, the best fit is the third degree polynomial (lowest QIC)
+```
+
+```{r PCS likelihood ratio test}
+poly1 <- geeglm(pcs ~ poly(timemonth, 1, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly2 <- geeglm(pcs ~ poly(timemonth, 2, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly3 <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+poly4 <- geeglm(pcs ~ poly(timemonth, 4, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(poly1)
+QIC(poly2)
+QIC(poly3)
+QIC(poly4)
+#For the TAFNES data, the best fit is the third degree polynomial (lowest QIC)
+```
+
+##b) Fractional polynomial (FP)
+
+This FP part of the program selects the best FP functions. It is designed to do backwards selection at the same time, but it can't handle interactions. We ran it as a univariate generalised linear model to find the best fitting FP functions, then later validate this in the final models.
+
+```{r MCS mfp}
+model <- mfp(mcs ~ fp(as.numeric(timemonth), df = 2, select = 0.05), family = gaussian, data = TAF_naive_long, verbose = TRUE)
+model$pvalues
+model$powers
+model$fptable
+model$fit
+#for the TAFNES data, the best-fitting function of time for MCS = ((timemonth) + 0.1)/10)^-2
+```
+
+```{r PCS mfp}
+model <- mfp(mcs ~ fp(as.numeric(timemonth), df = 2, select = 0.05), family = gaussian, data = TAF_naive_long, verbose = TRUE)
+model$pvalues
+model$powers
+model$fptable
+model$fit
+#for the TAFNES data, the best-fitting function of time for PCS = ((timemonth) + 0.1)/10)^-0.5
+```
+
+##c) Piecewise Linear Splines
+
+Piecewise linear splines work by dividing the x axis into sections, joined at "knots", and estimating linear relationships between the knots. You can add any number of knots at any position, but the more knots the more parameters need to be estimated, so generally the fewer the better. These splines can be fit in R i) using th bs() function from the splines package: e.g. bs(timemonth, knots = c(5), degree = 1) (knot position at 5 on the x axis, degree 1 = linear), or using the lspline function from the lspline package. The lspline function gives p value estimates for the slope, while the bs() function gives estimates for the difference in the y value at the knot position compared to baseline. As we were interested in the former, we used the lspline function. Here we use the segmented function to estimate the best knot position(s).
+
+```{r mcs spline estimation}
+mod <- lm(mcst~timemonth, data = TAF_naive_long)
+segmod <- segmented(mod, ~timemonth)
+confint.segmented(segmod)
+plot.segmented(segmod, conf.level = 0.95)
+#for the TAFNES data, the best fitting spline is at 2.3 months (95% CI 0.03-4.47)
+```
+
+```{r pcs spline estimation}
+mod <- lm(pcs~timemonth, data = TAF_naive_long)
+segmod <- segmented(mod, ~timemonth)
+confint.segmented(segmod)
+plot.segmented(segmod, conf.level = 0.95)
+#for the TAFNES data, the best fitting spline is at 4.4 months (95% CI 1.59-7.25)
+```
+
+#5) Working correlation matrix selection
+
+Using the non-linear functions selected above, choose the best-fitting working correlation matrix. for the TAFNES data, this was the unstructured matrix for all models.
+
+```{r MCS poly working correlation selection}
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r MCS fp working correlation selection}
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-2), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-2), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-2), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-2), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r MCS Spline working correlation selection}
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable1:lspline(timemonth,  c(2.3)) + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4 + variable4:lspline(timemonth,  c(2.3)) + variable5 + variable5:lspline(timemonth,  c(2.3)), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable1:lspline(timemonth,  c(2.3)) + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4 + variable4:lspline(timemonth,  c(2.3)) + variable5 + variable5:lspline(timemonth,  c(2.3)), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable1:lspline(timemonth,  c(2.3)) + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4 + variable4:lspline(timemonth,  c(2.3)) + variable5 + variable5:lspline(timemonth,  c(2.3)), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable1:lspline(timemonth,  c(2.3)) + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4 + variable4:lspline(timemonth,  c(2.3)) + variable5 + variable5:lspline(timemonth,  c(2.3)), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS poly working correlation selection}
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable1:poly(timemonth, 3, raw = TRUE) + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS fp working correlation selection}
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable1:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS Spline working correlation selection}
+model <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable1:lspline(timemonth,  c(4.4)) + variable2 + variable2:lspline(timemonth,  c(4.4)) + variable3 + variable3:lspline(timemonth,  c(4.4))+ variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable1:lspline(timemonth,  c(4.4)) + variable2 + variable2:lspline(timemonth,  c(4.4)) + variable3 + variable3:lspline(timemonth,  c(4.4))+ variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable1:lspline(timemonth,  c(4.4)) + variable2 + variable2:lspline(timemonth,  c(4.4)) + variable3 + variable3:lspline(timemonth,  c(4.4))+ variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable1:lspline(timemonth,  c(4.4)) + variable2 + variable2:lspline(timemonth,  c(4.4)) + variable3 + variable3:lspline(timemonth,  c(4.4))+ variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+#6) Covariate selection
+
+The covariates should next be selected. Please see Sample 5. Weighted generalised estimating equation (categorical), part 4b for guidance. For the TAFNES data, the models selected through backwards selection:
+
+*MCS*
+- Polynomial: geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+- Fractional polynomial: geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+- Piecewise linear spline: geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+
+*PCS*
+- Polynomial: geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+- Fractional polynomial: geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+- Piecewise linear spline: geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+
+#7) Validate functional form of non-linear continuous time variable
+
+Check the QIC of the final models after backwards selection of covariates with alternative functional forms for the continuous time variable.
+
+##a) Polynomial
+
+```{r mcs polynomial validation}
+model <- geeglm(pcs ~ poly(timemonth, 1, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 1, raw = TRUE) + variable4 + variable4:poly(timemonth, 1, raw = TRUE) + variable5 + variable5:poly(timemonth, 1, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4 + variable4:poly(timemonth, 2, raw = TRUE) + variable5 + variable5:poly(timemonth, 2, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 4, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 4, raw = TRUE) + variable4 + variable4:poly(timemonth, 4, raw = TRUE) + variable5 + variable5:poly(timemonth, 4, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+#for the TAFNES data, 3 degree polynomial is validated (lowest QIC)
+```
+
+```{r pcs polynomial validation}
+model <-geeglm(pcs ~ poly(timemonth, 1, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 1, raw = TRUE) + variable4 + variable4:poly(timemonth, 1, raw = TRUE) + variable5 + variable5:poly(timemonth, 1, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <-geeglm(pcs ~ poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4 + variable4:poly(timemonth, 2, raw = TRUE) + variable5 + variable5:poly(timemonth, 2, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <-geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <-geeglm(pcs ~ poly(timemonth, 4, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 4, raw = TRUE) + variable4 + variable4:poly(timemonth, 4, raw = TRUE) + variable5 + variable5:poly(timemonth, 4, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+#for the TAFNES data, 3 degree polynomial is validated (lowest QIC)
+```
+
+##b) Fractional polynomial
+
+There are a wider range of functional forms available using the fractional polynomial. We checked those that seemed reasonable given the data.
+
+```{r mcs fractional polynomial validation}
+#Different powers
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-1)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+#Different shifts
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.5)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.5)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.5)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.3)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.3)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.3)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+#Different scales (makes no difference)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/20)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/20)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/20)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs~ I(((as.numeric(timemonth) + 0.1)/15)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/15)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/15)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+#for the TAFNES data, validates estimated function ((timemonth) + 0.1)/10)^-2 (lowest QIC)
+```
+
+```{r pcs fractional polynomial validation}
+#Different powers
+modelP <- geeglm(pcs~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4, ~1 + timemonth  | participant, data=TAF_naive_long, method = "ML", na.action = na.omit)
+QIC(modelP)
+modelP <- geeglm(pcs~ I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-1)+ variable4, ~1 + timemonth  | participant, data=TAF_naive_long, method = "ML", na.action = na.omit)
+QIC(modelP)
+modelP <- geeglm(pcs~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, ~1 + timemonth  | participant, data=TAF_naive_long, method = "ML", na.action = na.omit)
+QIC(modelP)
+#Different shifts
+modelP <- geeglm(pcs~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5)+ variable4, ~1 + timemonth  | participant, data=TAF_naive_long, method = "ML", na.action = na.omit)
+QIC(modelP)
+modelP <- geeglm(pcs~ I(((as.numeric(timemonth) + 0.3)/10)^-0.5) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.3)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.3)/10)^-0.5)+ variable4, ~1 + timemonth  | participant, data=TAF_naive_long, method = "ML", na.action = na.omit)
+QIC(modelP)
+#for the TAFNES data, validates estimated function (timemonth) + 0.1)/10)^-0.5) (lowest QIC)
+```
+
+##c) Piecewise splines
+
+Test alternative knot positions (subset presented here)
+
+```{r mcs piecewise spline validation}
+modelM <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs ~ lspline(timemonth,  c(1)) + variable1 + variable2 + variable2:lspline(timemonth,  c(1)) + variable3 + variable3:lspline(timemonth,  c(1))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs ~ lspline(timemonth,  c(0.6)) + variable1 + variable2 + variable2:lspline(timemonth,  c(0.6)) + variable3 + variable3:lspline(timemonth,  c(0.6))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+#for the TAFNES data, validates knot position at 2.3 months
+```
+
+```{r pcs piecewise spline validation}
+modelP <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelP)
+modelP <- geeglm(pcs ~ lspline(timemonth,  c(3.9)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(3.9)) + variable4 + variable4:lspline(timemonth,  c(3.9)) + variable5 + variable5:lspline(timemonth,  c(3.9)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelP)
+modelP <- geeglm(pcs ~ lspline(timemonth,  c(4.6)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.6)) + variable4 + variable4:lspline(timemonth,  c(4.6)) + variable5 + variable5:lspline(timemonth,  c(4.6)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelP)
+#for the TAFNES data, validates knot position at 4.4 months
+```
+
+#7) Model checks
+
+Check working correlation matrix is correct after covariate selection.
+
+```{r MCS poly working correlation validation}
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r MCS fp working correlation validation}
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r MCS Spline working correlation validation}
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS poly working correlation validation}
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS fp working correlation validation}
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+```{r PCS Spline working correlation validation}
+model <- geeglm(lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#For the TAFNES data, the best fitting working correlation matrix is the unstructured matrix.
+```
+
+#8) Run the models to get results
+
+```{r Final mcs models}
+#poly
+modelM_poly <- geeglm(mcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(modelM_poly)))
+kable(coefs)
+
+#fp
+modelM_fp <-geeglm(mcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2)+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(modelM_fp)))
+kable(coefs)
+
+#spline
+modelM_spline <- geeglm(mcs ~ lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3))+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(modelM_spline)))
+kable(coefs)
+```
+
+```{r Final pcs models}
+#poly
+modelP_poly <- geeglm(pcs ~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(model)))
+kable(coefs)
+
+#fp
+modelP_fp <-  geeglm(pcs ~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(model)))
+kable(coefs)
+
+#spline
+modelP_spline <- geeglm(pcs ~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)) , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(model)))
+kable(coefs)
+```
+
+#8) Graphical visualisations
+
+To aid interpretability, the models can be visualised graphically. Simply specify the characteristics of the reference/average participant to visualise.
+
+Here we provide an example for the polynomial PCS model and the fractional polynomial MCS model (Figure 2 in our publication), but the other non-linear modelling approaches can also be visualised by changing the prediction models. Point estimates for time points of interest can also be generated using this approach.
+
+```{r Define the average person}
+participant <- rep(c("Average Person"), 241)
+variable1 <- rep(c("M"), 241)
+variable2 <- as.numeric(rep(0, 241))
+variable3 <- as.numeric(rep(c(0), 241))
+variable4 <- as.numeric(rep(c(0), 241))
+variable5 <- as.numeric(rep(c(0), 241))
+timemonth <- seq(0, 24, by = 0.1)
+
+dataexample <- as.data.frame(cbind(participant, variable1, variable2, variable3, variable4, variable5, timemonth))
+dataexample$variable1<- as.numeric(as.character(dataexample$variable1))
+dataexample$variable2 <- as.numeric(as.character(dataexample$variable2))
+dataexample$variable3 <- as.numeric(as.character(dataexample$variable3))
+dataexample$variable4 <- as.numeric(as.character(dataexample$variable4))
+dataexample$variable5 <- as.numeric(as.character(dataexample$variable5))
+```
+
+```{r Plot MCS and PCS over time}
+dataexample <- dataexample %>%
+  mutate(predM = predict(modelM_fp, newdata = dataexample),
+         predP = predict(modelP_poly, newdata = dataexample))
+#MCS
+ggplot(dataexample, aes(x = timemonth, y = predM, group = participant))+
+  theme_classic2() +
+  labs(y = "SF-36 Mental\nComponent Score", x = "Time from Baseline (Months)") +
+coord_cartesian( xlim = c(0, 25), ylim = c(45, 55))+
+  geom_line( size = 0.5, color = "blue4")+ 
+  theme(legend.position = "none", text = element_text(size=20))+
+  scale_x_continuous(breaks = c(0,3,6,12,18,24))
+#PCS
+ggplot(dataexample, aes(x = timemonth, y = predP, group = participant))+
+  theme_classic2() +
+  labs(y = "SF-36 Physical\nComponent Score", x = "Time from Baseline (Months)") +
+coord_cartesian( xlim = c(0, 25), ylim = c(50, 60))+
+  geom_line( size = 0.5, color = "red3")+ 
+  theme(legend.position = "none", text = element_text(size=20))+
+  scale_x_continuous(breaks = c(0,3,6,12,18,24))
+```
+
+```{r Prediction at each time point polynomial PCS}
+dataexample$predP[which(dataexample$timemonth == 0)]
+dataexample$predP[which(dataexample$timemonth == 3)]
+dataexample$predP[which(dataexample$timemonth == 6)]
+dataexample$predP[which(dataexample$timemonth == 12)]
+dataexample$predP[which(dataexample$timemonth == 18)]
+dataexample$predP[which(dataexample$timemonth == 24)]
+```
+
+```{r Prediction at each time point polynomial MCS}
+dataexample$predM[which(dataexample$timemonth == 0)]
+dataexample$predM[which(dataexample$timemonth == 3)]
+dataexample$predM[which(dataexample$timemonth == 6)]
+dataexample$predM[which(dataexample$timemonth == 12)]
+dataexample$predM[which(dataexample$timemonth == 18)]
+dataexample$predM[which(dataexample$timemonth == 24)]
+```

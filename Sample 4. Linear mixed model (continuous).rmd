@@ -1,0 +1,338 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc.
+---------------------------------------------------------------------
+Program Name    : Sample 4. Linear mixed model (continuous)
+Author          : Lucy Williams
+Date            : February 2022
+Packages        : lme4; nlme; knitr; mfp; lspline; sjPlot; segmented
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform linear mixed model analysis with time treated as a continuous variable
+---------------------------------------------------------------------
+
+*Summary*
+
+We use the lme function from the "nlme" R package to run linear mixed models (LMMs) for the change in MCS and PCS over time. First we estimate the best functional forms for three non-linear functions for the continuous time variable: a) polynomial transformation, b) fractional polynomial transformation, c) piecewise linear splines. We then use these non-linear functions in our models when selecting the type of random effect, performing backwards selection of covariates, and checking the model assumptions. 
+
+As we showed in "Sample 3. Linear mixed model (categorical)", for the TAFNES data, the LMM normality assumption could not be met without transforming our MCS and PCS outcome variables. Therefore in this sample code we demonstrate our model development using only our transformed outcome variables (mcst and pcst).
+
+Variables: 
+- timemonth = time from treatment initiation (months)
+- Participant = unique ID number for each participant
+- mcst = Transformed mental component score, mcst = -log(100-mcs)
+- pcst = Transformed physical component score, pcst = -log(100-pcs)
+- variableX = covariate such as age, HIV viral load or sex
+
+#1) Setup
+
+- Install and load required packages.
+- Load data in long format.
+- Ensure categorical predictor variables are converted to factor variables.
+
+```{r Packages}
+library(lme4)
+library(nlme)
+library(knitr)
+library(mfp)
+library(lspline)
+library(sjPlot)
+library(segmented)
+```
+
+#2) Selecting functional forms for non-linear functions
+
+We approximated the best functional forms for the non-linear functions using available R functions. As they run with models that are not mixed models and without covariates, we validated the best functional forms later in our final models.
+
+##a) Polynomial
+
+The sjp.poly function from the "sjPlot" package can be used to select the most appropriate degree for the data. It runs a separate regression model for each degree and visualises it with a ggplot. The line that is closest to the grey loess smoother curve gives the best fit. The p-values in the printed results tell you whether the additional complexity significantly improves the fit of the model. 
+
+https://www.rdocumentation.org/packages/sjPlot/versions/2.8.4/topics/sjp.poly
+
+```{r sjp.poly}
+#MCS
+sjp.poly(data_long$mcst, data_long$timemonth, 1:4, show.scatter = F, show.loess = TRUE, show.p = T)
+#-> for the TAFNES data, the best fit is the third degree polynomial, because it gives a significantly better fit than the second degree, but the fourth degree does not significantly improve the fit.
+#PCS
+sjp.poly(data_long$pcst, data_long$timemonth, 1:4, show.scatter = F, show.loess = TRUE, show.p = T)
+#-> for the TAFNES data, the best fit is the third degree polynomial, because it gives a significantly better fit than the second degree, but the fourth degree does not significantly improve the fit.
+```
+
+Comparing the model fit (AIC) of different polynomial functions. As we are comparing fixed effects, we must fit the models using maximum likelihood, not restricted maximum likelihood.
+
+```{r MCS likelihood ratio test}
+#MCS
+poly1 <- lme(fixed = mcst ~ poly(timemonth, 1, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly2 <- lme(fixed = mcst ~ poly(timemonth, 2, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly3 <- lme(fixed = mcst ~ poly(timemonth, 3, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly4 <- lme(fixed = mcst ~ poly(timemonth, 4, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly5 <- lme(fixed = mcst ~ poly(timemonth, 5, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+anova(poly1,poly2,poly3,poly4, poly5)
+#for the TAFNES data, the best fit is the third degree polynomial (lowest AIC, p<0.05)
+```
+
+```{r PCS likelihood ratio test}
+#PCS
+poly1 <- lme(fixed = pcst ~ poly(timemonth, 1, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly2 <- lme(fixed = pcst ~ poly(timemonth, 2, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly3 <- lme(fixed = pcst ~ poly(timemonth, 3, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly4 <- lme(fixed = pcst ~ poly(timemonth, 4, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+poly5 <- lme(fixed = pcst ~ poly(timemonth, 5, raw = TRUE), random = ~ 1 + timemonth | participant, data = data_long, method = "ML", na.action = na.omit)
+anova(poly1,poly2,poly3,poly4, poly5)
+#for the TAFNES data, the best fit is the third degree polynomial (lowest AIC, p<0.05)
+```
+
+##b) Fractional polynomial (FP)
+
+This FP part of the program selects the best FP functions. It is designed to do backwards selection at the same time, but it can't handle interactions. We ran it as a univariate generalised linear model to find the best fitting FP functions, then later validate this in the final models.
+
+```{r MCS mfp}
+model <- mfp(mcst ~ fp(as.numeric(timemonth), df = 2, select = 0.05), family = gaussian, data = data_long, verbose = TRUE)
+model$pvalues
+model$powers
+model$fptable
+model$fit
+#for the TAFNES data, the best-fitting function of time for MCS = ((timemonth) + 0.1)/10)^-2
+```
+
+```{r PCS mfp}
+model <- mfp(mcst ~ fp(as.numeric(timemonth), df = 2, select = 0.05), family = gaussian, data = data_long, verbose = TRUE)
+model$pvalues
+model$powers
+model$fptable
+model$fit
+#for the TAFNES data, the best-fitting function of time for PCS = ((timemonth) + 0.1)/10)^-0.5
+```
+
+##c) Piecewise Linear Splines
+
+Piecewise linear splines work by dividing the x axis into sections, joined at "knots", and estimating linear relationships between the knots. You can add any number of knots at any position, but the more knots the more parameters need to be estimated, so generally the fewer the better. These splines can be fit in R i) using th bs() function from the splines package: e.g. bs(timemonth, knots = c(5), degree = 1) (knot position at 5 on the x axis, degree 1 = linear), or using the lspline function from the lspline package. The lspline function gives p value estimates for the slope, while the bs() function gives estimates for the difference in the y value at the knot position compared to baseline. As we were interested in the former, we used the lspline function. Here we use the segmented function to estimate the best knot position(s).
+
+
+```{r MCS spline estimation}
+mod <- lm(mcst~timemonth, data = data_long)
+segmod <- segmented(mod, ~timemonth)
+confint.segmented(segmod)
+plot.segmented(segmod, conf.level = 0.95)
+#for the TAFNES data, the best fitting spline is at 2.3 months (95% CI 0.03-4.47)
+```
+
+```{r PCS spline estimation}
+mod <- lm(pcst~timemonth, data = data_long)
+segmod <- segmented(mod, ~timemonth)
+confint.segmented(segmod)
+plot.segmented(segmod, conf.level = 0.95)
+#for the TAFNES data, the best fitting spline is at 4.4 months (95% CI 1.59-7.25)
+```
+
+#3) Random effect selection
+
+The random effects should next be selected. Please see Sample 3. Linear mixed model (categorical time), part 2 for guidance. The best fitting models for the continuous time variable for the TAFNES data had a random effect on the intercept and slope with time (in the model code: ~1 + timemonth  | participant).
+
+#4) Covariate selection
+
+The covariates should next be selected. Please see Sample 3. Linear mixed model (categorical time), part 3 for guidance. Models selected through backwards selection:
+
+*MCS*
+
+- Polynomial: lme(mcst~  poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+- Fractional polynomial: lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+- Piecewise linear spline: lme(mcst~  lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3)) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+
+*PCS*
+- Polynomial: lme(pcst~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+- Fractional polynomial: lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+- Piecewise linear spline: lme(pcst~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+
+
+#5) Validate functional form of non-linear continuous time variable
+
+Check the AIC of the final models after backwards selection of covariates with alternative functional forms for the continuous time variable.
+
+##a) Polynomial
+
+```{r MCS polynomial validation}
+modelM <- lme(mcst~  poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 2, raw = TRUE) + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 3, raw = TRUE) + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  poly(timemonth, 4, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 4, raw = TRUE) + variable3 + variable3:poly(timemonth, 4, raw = TRUE) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+#for the TAFNES data, 3 degree polynomial is validated (lowest AIC)
+```
+
+```{r PCS polynomial validation}
+modelP <- lme(pcst~ poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4 + variable4:poly(timemonth, 2, raw = TRUE) + variable5 + variable5:poly(timemonth, 2, raw = TRUE), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ poly(timemonth, 3, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 3, raw = TRUE) + variable4 + variable4:poly(timemonth, 3, raw = TRUE) + variable5 + variable5:poly(timemonth, 3, raw = TRUE), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ poly(timemonth, 4, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 4, raw = TRUE) + variable4 + variable4:poly(timemonth, 4, raw = TRUE) + variable5 + variable5:poly(timemonth, 4, raw = TRUE), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+#for the TAFNES data, 3 degree polynomial is validated (lowest AIC)
+```
+
+##b) Fractional polynomial
+
+There are a wider range of functional forms available using the fractional polynomial. We checked those that seemed reasonable given the data.
+
+```{r MCS fractional polynomial validation}
+#Different powers
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+#Different shifts
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.5)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.5)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.5)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.3)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.3)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.3)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+#Different scales (makes no difference)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/20)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/20)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/20)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/15)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/15)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/15)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+#for the TAFNES data, validates estimated function ((timemonth) + 0.1)/10)^-2 (lowest AIC)
+```
+
+```{r PCS fractional polynomial validation}
+#Different powers
+modelP <- lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-1) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-1), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-2), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+#Different shifts
+modelP <- lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ I(((as.numeric(timemonth) + 0.3)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.3)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.3)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.3)/10)^-0.5), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+#for the TAFNES data, validates estimated function (timemonth) + 0.1)/10)^-0.5) (lowest AIC)
+```
+
+##c) Piecewise splines
+
+Test alternative knot positions (subset presented here)
+
+```{r MCS piecewise spline validation}
+modelM <- lme(mcst~  lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3)) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  lspline(timemonth,  c(1)) + variable1 + variable2 + variable2:lspline(timemonth,  c(1)) + variable3 + variable3:lspline(timemonth,  c(1)) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+modelM <- lme(mcst~  lspline(timemonth,  c(0.6)) + variable1 + variable2 + variable2:lspline(timemonth,  c(0.6)) + variable3 + variable3:lspline(timemonth,  c(0.6)) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelM)
+#for the TAFNES data, validates knot position at 2.3 months
+```
+
+```{r PCS piecewise spline validation}
+modelP <- lme(pcst~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ lspline(timemonth,  c(3.9)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(3.9)) + variable4 + variable4:lspline(timemonth,  c(3.9)) + variable5 + variable5:lspline(timemonth,  c(3.9)), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+modelP <- lme(pcst~ lspline(timemonth,  c(4.6)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.6)) + variable4 + variable4:lspline(timemonth,  c(4.6)) + variable5 + variable5:lspline(timemonth,  c(4.6)), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+AIC(modelP)
+#for the TAFNES data, validates knot position at 4.4 months
+```
+
+#6) Check model assumptions and run final models
+
+Check model assumptions are reasonable. Please see Sample 3. Linear mixed model (categorical time), part 5 for guidance. For the TAFNES data, all assumptions were reasonable when using the transformed MCS and PCS variables.
+
+```{r Final MCSt polynomial}
+modelM_poly <- lme(mcst~  poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable2:poly(timemonth, 2, raw = TRUE) + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelM)
+```
+
+```{r Final PCSt polynomial}
+modelP_poly <- lme(pcst~ poly(timemonth, 2, raw = TRUE) + variable1 + variable2 + variable3 + variable3:poly(timemonth, 2, raw = TRUE) + variable4 + variable4:poly(timemonth, 2, raw = TRUE) + variable5 + variable5:poly(timemonth, 2, raw = TRUE), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelP)
+```
+
+```{r Final MCSt fractional polynomial}
+modelM_fp <- lme(mcst~  I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable1 + variable2 + variable2:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-2) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelM)
+```
+
+```{r Final PCSt polynomial}
+modelP_fp <- lme(pcst~ I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable1 + variable2 + variable3 + variable3:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable4 + variable4:I(((as.numeric(timemonth) + 0.1)/10)^-0.5) + variable5 + variable5:I(((as.numeric(timemonth) + 0.1)/10)^-0.5), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelP)
+```
+
+```{r Final MCSt piecewise linear splines}
+modelM_spline <- lme(mcst~  lspline(timemonth,  c(2.3)) + variable1 + variable2 + variable2:lspline(timemonth,  c(2.3)) + variable3 + variable3:lspline(timemonth,  c(2.3)) + variable4, ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelM)
+```
+
+```{r Final PCSt piecewise linear splines}
+modelP_spline <- lme(pcst~ lspline(timemonth,  c(4.4)) + variable1 + variable2 + variable3 + variable3:lspline(timemonth,  c(4.4)) + variable4 + variable4:lspline(timemonth,  c(4.4)) + variable5 + variable5:lspline(timemonth,  c(4.4)), ~1 + timemonth  | participant, data=data_long, method = "ML", na.action = na.omit)
+summary(modelP)
+```
+
+#7) Graphical visualisations
+
+To aid interpretability, the models can be visualised graphically. Simply specify the characteristics of the reference/average participant to visualise.
+
+Here we provide an example for the polynomial PCS model and the fractional polynomial MCS model, but the other non-linear modelling approaches can also be visualised by changing the prediction models. Point estimates for time points of interest can also be generated using this approach.
+
+```{r Define the average person}
+participant <- rep(c("Average Person"), 241)
+variable1 <- rep(c("M"), 241)
+variable2 <- as.numeric(rep(0, 241))
+variable3 <- as.numeric(rep(c(0), 241))
+variable4 <- as.numeric(rep(c(0), 241))
+variable5 <- as.numeric(rep(c(0), 241))
+timemonth <- seq(0, 24, by = 0.1)
+
+dataexample <- as.data.frame(cbind(participant, variable1, variable2, variable3, variable4, variable5, timemonth))
+dataexample$variable1<- as.numeric(as.character(dataexample$variable1))
+dataexample$variable2 <- as.numeric(as.character(dataexample$variable2))
+dataexample$variable3 <- as.numeric(as.character(dataexample$variable3))
+dataexample$variable4 <- as.numeric(as.character(dataexample$variable4))
+dataexample$variable5 <- as.numeric(as.character(dataexample$variable5))
+```
+
+```{r Plot MCS and PCS over time}
+dataexample <- dataexample %>%
+  mutate(predM = predict(modelM_fp, newdata = dataexample),
+         predP = predict(modelP_poly, newdata = dataexample))
+#MCS
+ggplot(dataexample, aes(x = timemonth, y = predM, group = participant))+
+  theme_classic2() +
+  labs(y = "SF-36 Mental\nComponent Score", x = "Time from Baseline (Months)") +
+coord_cartesian( xlim = c(0, 25))+
+  geom_line( size = 0.5, color = "blue4")+ 
+  theme(legend.position = "none", text = element_text(size=20))+
+  scale_x_continuous(breaks = c(0,3,6,12,18,24))
+#PCS
+ggplot(dataexample, aes(x = timemonth, y = predP, group = participant))+
+  theme_classic2() +
+  labs(y = "SF-36 Physical\nComponent Score", x = "Time from Baseline (Months)") +
+coord_cartesian( xlim = c(0, 25))+
+  geom_line( size = 0.5, color = "red3")+ 
+  theme(legend.position = "none", text = element_text(size=20))+
+  scale_x_continuous(breaks = c(0,3,6,12,18,24))
+```
+
+```{r Prediction at each time point polynomial PCS}
+dataexample$predP[which(dataexample$timemonth == 0)]
+dataexample$predP[which(dataexample$timemonth == 3)]
+dataexample$predP[which(dataexample$timemonth == 6)]
+dataexample$predP[which(dataexample$timemonth == 12)]
+dataexample$predP[which(dataexample$timemonth == 18)]
+dataexample$predP[which(dataexample$timemonth == 24)]
+```
+
+```{r Prediction at each time point polynomial MCS}
+dataexample$predM[which(dataexample$timemonth == 0)]
+dataexample$predM[which(dataexample$timemonth == 3)]
+dataexample$predM[which(dataexample$timemonth == 6)]
+dataexample$predM[which(dataexample$timemonth == 12)]
+dataexample$predM[which(dataexample$timemonth == 18)]
+dataexample$predM[which(dataexample$timemonth == 24)]
+```
+

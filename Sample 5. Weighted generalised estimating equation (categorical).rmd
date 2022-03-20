@@ -1,0 +1,479 @@
+--------------------------------------------------------------------
+Gilead Sciences, Inc.
+---------------------------------------------------------------------
+Program Name    : Sample 5. Weighted generalised estimating equation (categorical)
+Author          : Lucy Williams
+Date            : February 2022
+Packages        : 
+---------------------------------------------------------------------
+PURPOSE: Sample code showing how to perform weighted generalised estimating equation analysis with time treated as a categorical variable
+---------------------------------------------------------------------
+
+*Summary*
+
+We use the geeglm function from the "geepack" R package to run generalised estimating equations (GEE) for the change in MCS and PCS over time. First we check which missing data assumption is most appropriate for the data. Normal GEEs assume that missing data is missing completely at random (MCAR), while weighted GEEs can handle data that is MCAR or missing at random (MAR). As we find that MCAR should not be assumed for our data, we use a weighted GEE.
+
+We produce inverse probability weights for each MCS and PCS observation using logistic regression models for each follow up interval, and use these weights in the subsequent wGEE models. We select the most appropriate working correlation matrix, then select covariates by backwards selection.
+
+Variables: 
+- INSTANCENAME = visit window (month 0, 3, 6, 12, 18 or 24)
+- Participant = unique ID number for each participant
+- mcs = Mental component score
+- pcs = Physical component score
+- variableX = covariate such as age, HIV viral load or sex
+- Month0M/Month0P = MCS/PCS score at 0 months post treatment initiation
+
+#1) Setup 
+
+- Install and load required packages.
+- Load data in long and wide format.
+- Ensure categorical predictor variables are converted to factor variables.
+
+```{r Packages}
+library(ggplot2)
+library(geepack)
+library(ggpubr)
+library(MuMIn)
+library(lspline)
+library(naniar)
+```
+
+
+#2) Test the validity of the MCAR assumption - Little's MCAR test
+
+For the R function, mcar_test, character variables variables must be converted to factors.
+
+```{r mcar_test}
+str(data_wide[1,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M", "variable1", "variable2", "variable3", "variable4", "variable5")]) 
+data_wide$variable1 <- as.factor(data_wide$variable1)
+data_wide$variable2 <- as.factor(data_wide$variable2)
+data_wide$variable3 <- as.factor(data_wide$variable3)
+data_wide$variable4 <- as.factor(data_wide$variable4)
+data_wide$variable5 <- as.factor(data_wide$variable5)
+littletest <- mcar_test(data_wide[,c("Month0M", "Month3M","Month6M","Month12M","Month18M","Month24M","Month0P", "Month3P","Month6P","Month12P","Month18P","Month24P", "variable1", "variable2", "variable3", "variable4", "variable5")])
+print(littletest$p.value,digits=6)
+#applied to TAFNES data, p = 0.0001 -> MCAR is an invalid assumption
+```
+
+If MCAR is not a valid assumption, a weighted GEE must be used, in which each observation is inversely weighted by the probability that it was observed. We demonstrate our approach for weight generation in step 3. If MCAR is valid, a non-weighted GEE can be used (skip to step 4).
+
+#3) Inverse probability weighting
+
+##a) Create the outcome variables - binary variables for missingness at each visit window
+
+The Month(X)P variables in data_wide are the PCS scores in each visit window. Here we create a binary missingness variable for whether or not the Month(X)P variable is NA or not. In our data, when a PCS observation was present, an MCS observation was also present, so we use the PCS missingness variable for both PCS and MCS.
+
+```{r Creating binary missingness variable}
+data_wide$M0mis <- rep(NA, nrow(data_wide))
+data_wide$M3mis <- rep(NA, nrow(data_wide))
+data_wide$M6mis <- rep(NA, nrow(data_wide))
+data_wide$M12mis <- rep(NA, nrow(data_wide))
+data_wide$M18mis <- rep(NA, nrow(data_wide))
+data_wide$M24mis <- rep(NA, nrow(data_wide))
+
+data_wide$M0mis[which(is.na(data_wide$Month0P))] <- 1
+data_wide$M0mis[which(!is.na(data_wide$Month0P))] <- 0
+data_wide$M0mis <- as.numeric(data_wide$M0mis)
+
+data_wide$M3mis[which(is.na(data_wide$Month3P))] <- 1
+data_wide$M3mis[which(!is.na(data_wide$Month3P))] <- 0
+data_wide$M3mis <- as.numeric(data_wide$M3mis)
+
+data_wide$M6mis[which(is.na(data_wide$Month6P))] <- 1
+data_wide$M6mis[which(!is.na(data_wide$Month6P))] <- 0
+data_wide$M6mis <- as.numeric(data_wide$M6mis)
+
+data_wide$M12mis[which(is.na(data_wide$Month12P))] <- 1
+data_wide$M12mis[which(!is.na(data_wide$Month12P))] <- 0
+data_wide$M12mis <- as.numeric(data_wide$M12mis)
+
+data_wide$M18mis[which(is.na(data_wide$Month18P))] <- 1
+data_wide$M18mis[which(!is.na(data_wide$Month18P) )] <- 0
+data_wide$M18mis <- as.numeric(data_wide$M18mis)
+
+data_wide$M24mis[which(is.na(data_wide$Month24P))] <- 1
+data_wide$M24mis[which(!is.na(data_wide$Month24P))] <- 0
+data_wide$M24mis <- as.numeric(data_wide$M24mis)
+```
+
+
+##b) Create 'Most recent score' variable
+
+This is often likely to be a strong predictor of missingness for PRO data. We create a most recent score variable column for month 3 onwards. We didn't do this for baseline because the most recent score at baseline will just be the score at baseline - if it is present.
+
+```{r Creating "most recent" column}
+#M3
+data_wide$Month3M_rec <- data_wide$Month3M
+data_wide$Month3M_rec[which(is.na(data_wide$Month3M_rec))] <- data_wide$Month0M[which(is.na(data_wide$Month3M_rec))] 
+data_wide$Month3P_rec <- data_wide$Month3P
+data_wide$Month3P_rec[which(is.na(data_wide$Month3P_rec))] <- data_wide$Month0P[which(is.na(data_wide$Month3P_rec))] 
+#M6
+data_wide$Month6M_rec <- data_wide$Month6M
+data_wide$Month6M_rec[which(is.na(data_wide$Month6M_rec))] <- data_wide$Month3M_rec[which(is.na(data_wide$Month6M_rec))] 
+data_wide$Month6P_rec <- data_wide$Month6P
+data_wide$Month6P_rec[which(is.na(data_wide$Month6P_rec))] <- data_wide$Month3M_rec[which(is.na(data_wide$Month6P_rec))] 
+#M12
+data_wide$Month12M_rec <- data_wide$Month12M
+data_wide$Month12M_rec[which(is.na(data_wide$Month12M_rec))] <- data_wide$Month6M_rec[which(is.na(data_wide$Month12M_rec))] 
+data_wide$Month12P_rec <- data_wide$Month12P
+data_wide$Month12P_rec[which(is.na(data_wide$Month12P_rec))] <- data_wide$Month6M_rec[which(is.na(data_wide$Month12P_rec))]
+#M18
+data_wide$Month18M_rec <- data_wide$Month18M
+data_wide$Month18M_rec[which(is.na(data_wide$Month18M_rec))] <- data_wide$Month12M_rec[which(is.na(data_wide$Month18M_rec))] 
+data_wide$Month18P_rec <- data_wide$Month18P
+data_wide$Month18P_rec[which(is.na(data_wide$Month18P_rec))] <- data_wide$Month12M_rec[which(is.na(data_wide$Month18P_rec))]
+#M24
+data_wide$Month24M_rec <- data_wide$Month24M
+data_wide$Month24M_rec[which(is.na(data_wide$Month24M_rec))] <- data_wide$Month18M_rec[which(is.na(data_wide$Month24M_rec))] 
+data_wide$Month24P_rec <- data_wide$Month24P
+data_wide$Month24P_rec[which(is.na(data_wide$Month24P_rec))] <- data_wide$Month18M_rec[which(is.na(data_wide$Month24P_rec))]
+```
+
+#c) Checking proportion of missing values that are intermittent
+
+An important factor to consider when calculating weights for wGEE is the type of missing data, as ‘intermittent’ or ‘dropout’. Intermittent missingness is where one or more observations are missing before a subsequent observation, while dropout missingness is where no further observations are made on an individual. Intermittent missingness can generally be assumed to be ignorable when the percentage of intermittent missing values is relatively low. In the TAFNES data, ~15% of data was intermittently missing, so intermittent missingness was treated as ignorable, and weights were calculated for each observation according to the probability of missingness by dropout.
+
+As the missing observations at M24 cannot be distinguished between intermittent or dropout, they are all assumed to be dropout missingness - as this gives a more conservative missing data assumption.
+
+```{r Create dropout missingness column}
+#Dropout column is first set to missing column (=1 if missing). Those missing cases who had another observation after this missing observation have not dropped out, so are set back to 0 (not dropout missingness).
+#M0
+data_wide$M0drop <- data_wide$M0mis
+data_wide$M0drop[which(data_wide$M3mis == 0 |data_wide$M6mis == 0 |data_wide$M12mis == 0 |data_wide$M18mis == 0 |data_wide$M24mis == 0)] <- 0 
+table(data_wide$M0drop)
+#M3
+data_wide$M3drop <- data_wide$M3mis
+data_wide$M3drop[which(data_wide$M6mis == 0 |data_wide$M12mis == 0 |data_wide$M18mis == 0 |data_wide$M24mis == 0)] <- 0 
+table(data_wide$M3drop)
+#M6
+data_wide$M6drop <- data_wide$M6mis
+data_wide$M6drop[which(data_wide$M12mis == 0 |data_wide$M18mis == 0 |data_wide$M24mis == 0)] <- 0 
+table(data_wide$M6drop)
+#M12
+data_wide$M12drop <- data_wide$M12mis
+data_wide$M12drop[which(data_wide$M18mis == 0 |data_wide$M24mis == 0)] <- 0 
+table(data_wide$M12drop)
+#M18
+data_wide$M18drop <- data_wide$M18mis
+data_wide$M18drop[which(data_wide$M24mis == 0)] <- 0 
+table(data_wide$M18drop)
+#M24
+data_wide$M24drop <- data_wide$M24mis
+table(data_wide$M24drop)
+```
+
+```{r Create intermittent missingness column}
+#M0
+data_wide$M0int <- data_wide$M0mis
+data_wide$M0int[which(data_wide$M0drop == 1)] <- 0
+table(data_wide$M0int)
+#M3
+data_wide$M3int <- data_wide$M3mis
+data_wide$M3int[which(data_wide$M3drop == 1)] <- 0 
+table(data_wide$M3int)
+#M6
+data_wide$M6int <- data_wide$M6mis
+data_wide$M6int[which(data_wide$M6drop == 1)] <- 0 
+table(data_wide$M6int)
+#M12
+data_wide$M12int <- data_wide$M12mis
+data_wide$M12int[which(data_wide$M12drop == 1)] <- 0 
+table(data_wide$M12int)
+#M18
+data_wide$M18int <- data_wide$M18mis
+data_wide$M18int[which(data_wide$M18mis == 1)] <- 0 
+table(data_wide$M18int)
+
+#TAFNES data: Number of intermittent missings over number of observations at each time point (from tables above)
+(50+54+69+17)/(293+243+239+224+276)#=0.149 (assuming all missings at M24 are dropout)
+(50+54+69+17)/(293+243+239+224)#0.19 w/o m24
+#Therefore assume OK to treat intermittent missingness as MCAR.
+```
+
+##d) Check if all follow up visits have a most recent score observation
+
+In our weights models we use a variable for the most recent mcs/pcs score, to predict whether there will be an observation at the next visit window. This would be simple if all participants had an observation at baseline, but in our data some participants did not provide PRO data at this visit. Here we check if there is a visit window at which all observations have a previous observation. As we found that there is not, we opted to run separate regressions when i) there was a previous score available and ii) when there was not.
+
+If there was a previous score available at all visit windows, only these models would need to be run.
+
+```{r check previous scores observations}
+TAF_naive_wide2$Month3M[which(!is.na(TAF_naive_wide2$Month3M) & is.na(TAF_naive_wide2$Month0M))]
+TAF_naive_wide2$Month6M[which(!is.na(TAF_naive_wide2$Month6M) & is.na(TAF_naive_wide2$Month3M_rec))]
+TAF_naive_wide2$Month12M[which(!is.na(TAF_naive_wide2$Month12M) & is.na(TAF_naive_wide2$Month6M_rec))]
+TAF_naive_wide2$Month18M[which(!is.na(TAF_naive_wide2$Month18M) & is.na(TAF_naive_wide2$Month12M_rec))]
+TAF_naive_wide2$Month24M[which(!is.na(TAF_naive_wide2$Month24M) & is.na(TAF_naive_wide2$Month18M_rec))]
+#at each visit window, there are some cases that do not have a previous observation
+```
+
+##e) Dropout models for missingness - with previous score variable
+The Hosmer-Lemershow test was used to check the goodness of fit of each missingness model. Statistically insignificant (p>0.05) results indicate good fit. 
+
+```{r M3 previous score model}
+mod3<- glm(M3drop ~ variable1 + variable2 + variable3 + variable4 + variable5 + Month0P + Month0M, data = TAF_naive_wide2, family = "binomial") #"Month0P" and "Month0M" are the baseline PCS and MCS scores respectively
+hoslem.test(mod3$y, fitted(mod3))
+summary(mod3)
+exp(mod3$coef)
+TAF_naive_wide2$Weights3Months_drop_full_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights3Months_drop_full_[ as.integer(attr(mod3$fitted,"names"))] <- mod3$fitted
+TAF_naive_wide2$Weights3Months_drop_full<- 1/(1-TAF_naive_wide2$Weights3Months_drop_full_)
+```
+
+```{r M6 previous score model}
+mod6<- glm(M6drop ~  variable1 + variable2 + variable3 + variable4 + variable5 +  Month3M_rec + Month3P_rec, data = TAF_naive_wide2, family = "binomial")#"Month3P_rec" and "Month3M_rec" are the most recent PCS and MCS scores respectively
+hoslem.test(mod6$y, fitted(mod6))
+summary(mod6)
+exp(mod6$coef)
+TAF_naive_wide2$Weights6Months_drop_full_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights6Months_drop_full_[ as.integer(attr(mod6$fitted,"names"))] <- mod6$fitted
+TAF_naive_wide2$Weights6Months_drop_full<- 1/(1-TAF_naive_wide2$Weights6Months_drop_full_)
+```
+
+```{r M12 previous score model}
+mod12<- glm(M12drop ~  variable1 + variable2 + variable3 + variable4 + variable5 + Month6M_rec + Month6P_rec, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod12$y, fitted(mod12))
+summary(mod12)
+exp(mod12$coef)
+TAF_naive_wide2$Weights12Months_drop_full_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights12Months_drop_full_[ as.integer(attr(mod12$fitted,"names"))] <- mod12$fitted
+TAF_naive_wide2$Weights12Months_drop_full<- 1/(1-TAF_naive_wide2$Weights12Months_drop_full_)
+```
+
+```{r M18 previous score model}
+mod18<- glm(M18drop ~  variable1 + variable2 + variable3 + variable4 + variable5 + Month12M_rec + Month12P_rec, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod18$y, fitted(mod18))
+summary(mod18)
+exp(mod18$coef)
+TAF_naive_wide2$Weights18Months_drop_full_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights18Months_drop_full_[ as.integer(attr(mod18$fitted,"names"))] <- mod18$fitted
+TAF_naive_wide2$Weights18Months_drop_full<- 1/(1-TAF_naive_wide2$Weights18Months_drop_full_)
+```
+
+```{r M24 previous score model}
+mod24<- glm(M24drop ~ variable1 + variable2 + variable3 + variable4 + variable5 + Month18M_rec + Month18P_rec, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod24$y, fitted(mod24))
+summary(mod24)
+exp(mod24$coef)
+TAF_naive_wide2$Weights24Months_drop_full_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights24Months_drop_full_[ as.integer(attr(mod24$fitted,"names"))] <- mod24$fitted
+TAF_naive_wide2$Weights24Months_drop_full<- 1/(1-TAF_naive_wide2$Weights24Months_drop_full_)
+```
+
+##f) Dropout models for missingness - without previous score variable
+
+```{r M0 without previous score model}
+mod0<- glm(M0drop ~  variable1 + variable2 + variable3 + variable4 + variable5 , data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod0$y, fitted(mod0))
+summary(mod0)
+exp(mod0$coef)
+TAF_naive_wide2$Weights0Months_drop_fill <- 1/(1-mod0$fitted)
+```
+
+```{r M3 without previous score model}
+mod3<- glm(M3drop ~  variable1 + variable2 + variable3 + variable4 + variable5, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod3$y, fitted(mod3))
+summary(mod3)
+TAF_naive_wide2$Weights3Months_drop_fill_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights3Months_drop_fill_[ as.integer(attr(mod3$fitted,"names"))] <- mod3$fitted
+TAF_naive_wide2$Weights3Months_drop_fill<- 1/(1-TAF_naive_wide2$Weights3Months_drop_fill_)
+```
+
+```{r M6 without previous score model}
+mod6<- glm(M6drop ~  variable1 + variable2 + variable3 + variable4 + variable5, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod6$y, fitted(mod6))
+summary(mod6)
+exp(mod6$coef)
+TAF_naive_wide2$Weights6Months_drop_fill_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights6Months_drop_fill_[ as.integer(attr(mod6$fitted,"names"))] <- mod6$fitted
+TAF_naive_wide2$Weights6Months_drop_fill<- 1/(1-TAF_naive_wide2$Weights6Months_drop_fill_)
+```
+
+```{r M12 without previous score model}
+mod12<- glm(M12drop ~  variable1 + variable2 + variable3 + variable4 + variable5, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod12$y, fitted(mod12))
+summary(mod12)
+exp(mod12$coef)
+TAF_naive_wide2$Weights12Months_drop_fill_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights12Months_drop_fill_[ as.integer(attr(mod12$fitted,"names"))] <- mod12$fitted
+TAF_naive_wide2$Weights12Months_drop_fill<- 1/(1-TAF_naive_wide2$Weights12Months_drop_fill_)
+```
+
+```{r M18 without previous score model}
+mod18<- glm(M18drop ~  variable1 + variable2 + variable3 + variable4 + variable5, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod18$y, fitted(mod18))
+summary(mod18)
+exp(mod18$coef)
+TAF_naive_wide2$Weights18Months_drop_fill_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights18Months_drop_fill_[ as.integer(attr(mod18$fitted,"names"))] <- mod18$fitted
+TAF_naive_wide2$Weights18Months_drop_fill<- 1/(1-TAF_naive_wide2$Weights18Months_drop_fill_)
+```
+
+```{r M24 without previous score model}
+mod24<- glm(M24drop ~  variable1 + variable2 + variable3 + variable4 + variable5, data = TAF_naive_wide2, family = "binomial")
+hoslem.test(mod24$y, fitted(mod24))
+summary(mod24)
+exp(mod24$coef)
+TAF_naive_wide2$Weights24Months_drop_fill_<-rep(0, nrow(TAF_naive_wide2))
+TAF_naive_wide2$Weights24Months_drop_fill_[ as.integer(attr(mod24$fitted,"names"))] <- mod24$fitted
+TAF_naive_wide2$Weights24Months_drop_fill<- 1/(1-TAF_naive_wide2$Weights24Months_drop_fill_)
+```
+
+##g) Assign weights to observations in wide and long datasets
+
+For observations with a "previous observation", the probability of being observed is predicted by the model with the previous observation as a covariate. For those without, the probability of being observed is predicted by the same model, without covariates for previous observations.
+
+```{r Combining models for cases with and without previous observations 1}
+#'Both' column first set to the probabilities predicted by the models which don't include the previous scores as predictors
+TAF_naive_wide2$Weights0Months_drop_both <- TAF_naive_wide2$Weights0Months_drop_fill
+TAF_naive_wide2$Weights3Months_drop_both <- TAF_naive_wide2$Weights3Months_drop_fill
+TAF_naive_wide2$Weights6Months_drop_both <- TAF_naive_wide2$Weights6Months_drop_fill
+TAF_naive_wide2$Weights12Months_drop_both <- TAF_naive_wide2$Weights12Months_drop_fill
+TAF_naive_wide2$Weights18Months_drop_both <- TAF_naive_wide2$Weights18Months_drop_fill
+TAF_naive_wide2$Weights24Months_drop_both <- TAF_naive_wide2$Weights24Months_drop_fill
+```
+
+```{r Combining models for cases with and without previous observations 2}
+#Observations which did have a 'most recent' observation for mcs or pcs are then overwritten with the probability predicted by the model with previous scores as predictors
+TAF_naive_wide2$Weights3Months_drop_both[which(!is.na(TAF_naive_wide2$Month0P))]<- TAF_naive_wide2$Weights3Months_drop_full[which(!is.na(TAF_naive_wide2$Month0P))]
+TAF_naive_wide2$Weights6Months_drop_both[which(!is.na(TAF_naive_wide2$Month3P_rec))]<- TAF_naive_wide2$Weights6Months_drop_full[which(!is.na(TAF_naive_wide2$Month3P_rec))]
+TAF_naive_wide2$Weights12Months_drop_both[which(!is.na(TAF_naive_wide2$Month6P_rec))]<- TAF_naive_wide2$Weights12Months_drop_full[which(!is.na(TAF_naive_wide2$Month6P_rec))]
+TAF_naive_wide2$Weights18Months_drop_both[which(!is.na(TAF_naive_wide2$Month12P_rec))]<- TAF_naive_wide2$Weights18Months_drop_full[which(!is.na(TAF_naive_wide2$Month12P_rec))]
+TAF_naive_wide2$Weights24Months_drop_both[which(!is.na(TAF_naive_wide2$Month18P_rec))]<- TAF_naive_wide2$Weights24Months_drop_full[which(!is.na(TAF_naive_wide2$Month18P_rec))]
+```
+
+```{r Add weights to long dataset}
+#Transfer weights for each case
+data_long<- left_join(data_long, TAF_naive_wide2[, c("participant", "Weights0Months_drop_both", "Weights3Months_drop_both", "Weights6Months_drop_both", "Weights12Months_drop_both", "Weights18Months_drop_both", "Weights24Months_drop_both")])
+#Create a weight variable, of the weight for that case at that visit window
+data_long$weights <- rep(NA, nrow(data_long))
+data_long$weights[which(data_long$INSTANCENAME == "Before Study Treatment Initiation")] <- data_long$Weights0Months_drop_both[which(data_long$INSTANCENAME == "Before Study Treatment Initiation")]
+data_long$weights[which(data_long$INSTANCENAME == "3 Month Follow Up")] <- data_long$Weights3Months_drop_both[which(data_long$INSTANCENAME == "3 Month Follow Up")]
+data_long$weights[which(data_long$INSTANCENAME == "6 Month Follow Up")] <- data_long$Weights6Months_drop_both[which(data_long$INSTANCENAME == "6 Month Follow Up")]
+data_long$weights[which(data_long$INSTANCENAME == "12 Month Follow Up")] <- data_long$Weights12Months_drop_both[which(data_long$INSTANCENAME == "12 Month Follow Up")]
+data_long$weights[which(data_long$INSTANCENAME == "18 Month Follow Up")] <- data_long$Weights18Months_drop_both[which(data_long$INSTANCENAME =="18 Month Follow Up")]
+data_long$weights[which(data_long$INSTANCENAME == "24 Month Follow Up")] <- data_long$Weights24Months_drop_both[which(data_long$INSTANCENAME == "24 Month Follow Up")]
+```
+
+#4) Run (weighted) GEE models
+
+The framework for running a (w)GEE model is similar to the LMM. For the (w)GEE you specify the outcome as a function of your set of predictors, the dataset, your grouping variable, the error and link distribution, the working correlation matrix, and, if applicable, the inverse probability weights.
+
+Here we:
+
+a) setup the data for the GEE
+b) select a working correlation matrix
+c) select covariates through backwards selection
+d) check model assumptions
+
+
+##a) Data setup
+
+The ID variable must be an ordered integer, and the data cannot include any NAs.
+
+```{r wGEE data setup}
+data_long <- na.omit(data_long[, c("participant", "mcs", "pcs", "sex", "variable1", "variable2", "variable3", "variable4", "variable5", "INSTANCENAME", "timemonth", "weights")])
+data_long$participant <- as.integer(data_long$participant)
+data_long<- data_long[order(data_long$participant),]
+```
+
+##b) Choosing the working correlation matrix
+
+We select the working correlation matrix in the full model, with all covariates and their interactions with time. We select the working correlation matrix as the model with the best fit (lowest QIC).
+
+```{r MCS working correlation matrix}
+model <- geeglm(mcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(model)
+model <- geeglm(mcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#-> for the TAFNES data, the unstructured working correlation gives the best fit (lowest QIC)
+```
+
+```{r PCS working correlation matrix}
+model <- geeglm(pcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+print(QIC(model),digits = 10)
+model <- geeglm(pcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(model)
+model <- geeglm(pcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+print(QIC(model),digits = 10)
+model <- geeglm(pcs ~   INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(model)
+#-> for the TAFNES data, the unstructured working correlation gives the best fit (lowest QIC)
+```
+
+##b) Covariate selection
+
+We used backwards selection to select the final covariates in the model. Starting with a full model with all hypothesised predictor variables and their interactions with time, we iteratively removed the predictor with the highest P-value until all predictors had a P-value less than or equal to 0.05. As backwards selection can lead to problems with multiple testing, inclusion of covariates in the final models from backwards selection were validated by testing their inclusion with the QIC, and including only those that improved the model fit. 
+
+```{r Covariate selection WGEE MCS Categorical}
+model <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#variable 5:INSTANCENAME interaction has highest p value, remove
+
+model <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable4:INSTANCENAME + variable5, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#variable 4:INSTANCENAME interaction has highest p value, remove
+
+model <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4 + variable5, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#variable 5 has highest p value, remove
+
+model <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#all estimates p<0.05
+
+#Check variable's for which the interaction with time was are only significant for 1 visit window, using AIC (lower = better fit).
+model <- geeglm(mcs ~ INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#removing variable1:INSTANCENAME increases AIC, keep
+```
+
+```{r Covariate selection WGEE PCS Categorical}
+model <- geeglm(pcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME+ variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#variable 1:INSTANCENAME interaction has highest p value, remove
+
+model <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable2:INSTANCENAME+ variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#variable 2:INSTANCENAME interaction has highest p value, remove
+
+model <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME , data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+summary(model)#all estimates p<0.05
+```
+
+#4) Run final models
+
+```{r Final MCS}
+modelM <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(modelM)))
+kable(coefs)
+```
+
+```{r Final PCS}
+modelP <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+coefs <- data.frame(coef(summary(modelP)))
+kable(coefs)
+```
+
+#5) Model checks
+
+Check working correlation matrix is correct after covariate selection.
+
+```{r check correlation matrix MCS}
+modelM <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(modelM)
+modelM <- geeglm(mcs ~ INSTANCENAME + variable1 + variable1:INSTANCENAME + variable2 + variable2:INSTANCENAME + variable3 + variable3:INSTANCENAME+ variable4, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(modelM)
+#-> for the TAFNES data, the unstructured working correlation gives the best fit (lowest QIC)
+```
+
+```{r check correlation matrix PCS}
+modelP <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "unstructured", weights = weights)
+QIC(modelP)
+modelP <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "exchangeable", weights = weights)
+QIC(modelP)
+modelP <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "independence", weights = weights)
+QIC(modelP)
+modelP <- geeglm(pcs ~ INSTANCENAME + variable1 + variable2 + variable3 + variable3:INSTANCENAME + variable4 + variable4:INSTANCENAME + variable5 + variable5:INSTANCENAME, data = data_long, id = participant, family = gaussian, corstr = "ar1", weights = weights)
+QIC(modelP)
+#-> for the TAFNES data, the unstructured working correlation gives the best fit (lowest QIC)
+```
