@@ -4,7 +4,6 @@ Gilead Sciences, Inc.
 Program Name    : Sample 4. Linear mixed model (continuous)
 Author          : Lucy Williams
 Date            : February 2022
-Packages        : lme4; nlme; knitr; mfp; lspline; sjPlot; segmented
 ---------------------------------------------------------------------
 PURPOSE: Sample code showing how to perform linear mixed model analysis with time treated as a continuous variable
 ---------------------------------------------------------------------
