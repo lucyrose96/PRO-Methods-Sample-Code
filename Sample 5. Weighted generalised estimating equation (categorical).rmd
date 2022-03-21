@@ -4,7 +4,6 @@ Gilead Sciences, Inc.
 Program Name    : Sample 5. Weighted generalised estimating equation (categorical)
 Author          : Lucy Williams
 Date            : February 2022
-Packages        : 
 ---------------------------------------------------------------------
 PURPOSE: Sample code showing how to perform weighted generalised estimating equation analysis with time treated as a categorical variable
 ---------------------------------------------------------------------
